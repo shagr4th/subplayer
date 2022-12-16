@@ -11,14 +11,184 @@ import { IconButton, Icon } from 'rsuite'
 import Slider from 'rc-slider';
 import 'rc-slider/assets/index.css';
 import "./MusicPlayer.less"
+/* eslint-disable */
 
 export default class MusicPlayer extends React.Component {
     
     constructor(props) {
         super(props)
-        this.state = { playing:false, tick: 0, isMuted: false, volume: settings.getVolume() }
+        this.state = { playing:false, tick: 0, isMuted: false, volume: settings.getVolume(),isCastConnected:false, castPlayerState:null, nextSongFromCastQueue: null, song:null, castQueueSongs:[] }
         this.volumeBeforeMutting = 1.0
         this.isSeeking = false
+        this.castPlayer = null;
+        this.castPlayerController = null;
+    }
+
+    componentDidMount() {
+        window['__onGCastApiAvailable'] = (isAvailable) => {
+            if (isAvailable && cast) {
+                this.initializeCastPlayer();
+            } else {
+                console.log("Was not able to initialize CastPlayer")
+            }
+        }
+        const script = document.createElement("script");
+        script.src = "https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1";
+        script.async = true;
+        document.body.appendChild(script);
+    }
+
+    initializeCastPlayer = () => {
+        var options = {};
+
+        options.receiverApplicationId = 'CC1AD845';
+        options.autoJoinPolicy = chrome.cast.AutoJoinPolicy.ORIGIN_SCOPED;
+        options.androidReceiverCompatible = true;
+        cast.framework.CastContext.getInstance().setOptions(options);
+
+        this.castPlayer = new cast.framework.RemotePlayer();
+        this.castPlayerController = new cast.framework.RemotePlayerController(this.castPlayer);
+
+        this.castPlayerController.addEventListener(
+            cast.framework.RemotePlayerEventType.IS_CONNECTED_CHANGED,
+            function (e) {
+                var isCastConnected = e.value
+                this.setState({ isCastConnected }, () => {
+                    console.log("Chromecast connection: ", isCastConnected)
+                })
+            }.bind(this)
+        );
+
+        this.castPlayerController.addEventListener(
+            cast.framework.RemotePlayerEventType.PLAYER_STATE_CHANGED,
+            function (e) {
+                console.log("Chromecast is " + e.value)
+                this.setState({ castPlayerState: e.value })
+                if (e.value === "PAUSED" && this.state.playing) {
+                    this.setState({ playing: false });
+                } else if (e.value === "PLAYING" && !this.state.playing) {
+                    if (!this.state.song && this.castPlayer && this.castPlayer.mediaInfo) {
+                        this.setState({
+                            playing: true,
+                            song: {
+                                id: this.castPlayer.mediaInfo.contentId,
+                                title: this.castPlayer.mediaInfo.metadata.title,
+                                duration: Math.ceil(this.castPlayer.mediaInfo.duration)
+                            }
+                        })
+                        this.streamer = this.cast();
+                    }
+                }
+            }.bind(this)
+        );
+
+        this.castPlayerController.addEventListener(
+            cast.framework.RemotePlayerEventType.CURRENT_TIME_CHANGED,
+            function () {
+                if (this.castPlayer) {
+                    this.setState({
+                        tick: Math.ceil(this.castPlayer.currentTime)
+                    })
+                }
+            }.bind(this)
+        );
+
+        this.castPlayerController.addEventListener(
+            cast.framework.RemotePlayerEventType.QUEUE_DATA_CHANGED,
+            function () {
+                if (this.castPlayer && this.castPlayer.mediaInfo && this.state.castQueueSongs) {
+                    let nextSongFromCastQueue = this.state.castQueueSongs.find(song => this.castPlayer.mediaInfo.contentId == song.id);
+                    console.log("nextSongFromCastQueue " + nextSongFromCastQueue);
+                    this.setState({
+                        nextSongFromCastQueue: nextSongFromCastQueue
+                    })
+                    if (nextSongFromCastQueue) {
+                        this.props.seekToSongInQueue(nextSongFromCastQueue);
+                    }
+                }
+            }.bind(this)
+        );
+    }
+
+    cast = (songs, prevSongs) => {
+        let reloadQueue = songs && songs != prevSongs && songs.some(song => !prevSongs.some(prevSong => prevSong.id == song.id));
+        if (reloadQueue || (songs && !this.state.nextSongFromCastQueue)) {
+            let request = new chrome.cast.media.QueueLoadRequest(songs.map(song => {
+                let mediaInfo = new chrome.cast.media.MediaInfo(song.id, 'audio/mp3')
+                mediaInfo.contentUrl = subsonic.getStreamUrl(song.id);
+
+                mediaInfo.streamType = chrome.cast.media.StreamType.BUFFERED;
+                mediaInfo.duration = song.duration;
+                mediaInfo.metadata = new chrome.cast.media.MusicTrackMediaMetadata();
+                mediaInfo.metadata.title = song.title;
+                mediaInfo.metadata.artist = song.artist;
+                mediaInfo.metadata.albumName = song.album;
+                if (song.coverArt) {
+                    mediaInfo.metadata.images = [ new chrome.cast.Image(subsonic.getCoverArtUrl(song.coverArt)) ];
+                }
+                return new chrome.cast.media.QueueItem(mediaInfo);
+            }));
+
+            var session = cast.framework.CastContext.getInstance().getCurrentSession()
+            if (session) {
+                session.getSessionObj().queueLoad(request, () => {
+                    console.log("Queue cast is loaded")
+                }, (e) => {
+                    console.log(e)
+                })
+            } else {
+                console.log("No cast session is available");
+            }
+        }
+        this.setState({
+            nextSongFromCastQueue: null,
+            castQueueSongs: songs && songs.length > 0 ? songs.slice(1) : []
+        })
+        return {
+            play: () => {
+                var session = cast.framework.CastContext.getInstance().getCurrentSession()
+                if (session && this.state.castPlayerState != 'PLAYING') {
+                    console.log("CAST PLAY");
+                    this.castPlayerController.playOrPause();
+                }
+            },
+            pause: () => {
+                var session = cast.framework.CastContext.getInstance().getCurrentSession()
+                if (session && this.state.castPlayerState == 'PLAYING') {
+                    console.log("CAST PAUSE");
+                    this.castPlayerController.playOrPause();
+                }
+            },
+            stop: () => {
+                var session = cast.framework.CastContext.getInstance().getCurrentSession()
+                if (session && !this.state.castQueueSongs) {
+                    console.log("CAST STOP");
+                    this.castPlayer.currentTime = 0;
+                    this.castPlayerController.seek();
+                    this.castPlayerController.stop();
+                }
+            },
+            seek: (seekTime) => {
+                var session = cast.framework.CastContext.getInstance().getCurrentSession()
+                if (session) {
+                    if (seekTime == undefined) {
+                        return this.castPlayer.currentTime;
+                    }
+                    this.castPlayer.currentTime = seekTime;
+                    this.castPlayerController.seek();
+                }
+            },
+            unload: () => {
+                
+            },
+            volume: (newVolume) => {
+                var session = cast.framework.CastContext.getInstance().getCurrentSession()
+                if (session) {
+                    this.castPlayer.volumeLevel = newVolume;
+                    this.castPlayerController.setVolumeLevel();
+                }
+            }
+        }
     }
 
     componentDidUpdate(prevProps) {
@@ -36,19 +206,23 @@ export default class MusicPlayer extends React.Component {
                 }
                 // Stop the previous song to prevent both songs to play at the same time
                 const newSong = this.props.song
-                this.streamer = new Howl({
-                    src: [subsonic.getStreamUrl(newSong.id)],
-                    ext: ['mp3'],
-                    preload: false,
-                    pool: 2,
-                    autoplay: true,
-                    html5: true,
-                    volume: this.state.volume,
-                    // Play next song
-                    onend: function() {
-                        playNextSong()
-                    }
-                })
+                if (this.state.isCastConnected) {
+                    this.streamer = this.cast(this.props.songs, prevProps.songs);
+                } else {
+                    this.streamer = new Howl({
+                        src: [subsonic.getStreamUrl(newSong.id)],
+                        ext: ['mp3'],
+                        preload: false,
+                        pool: 2,
+                        autoplay: true,
+                        html5: true,
+                        volume: this.state.volume,
+                        // Play next song
+                        onend: function() {
+                            playNextSong()
+                        }
+                    })
+                }
                 this.streamer.play()
                 this.startSongTicker()
                 this.isSeeking = false
@@ -198,11 +372,11 @@ export default class MusicPlayer extends React.Component {
         }
         clearInterval(this.timerID)
         // "Reset" UI
-        this.state.playing && this.setState({playing : false, tick: 0})
+        this.state.playing && !this.state.song && this.setState({playing : false, tick: 0})
     }
 
     render () {
-        const song = this.props.song ? this.props.song : {}
+        const song = this.props.song ? this.props.song : (this.state.song ? this.state.song : {})
         const playing = this.state.playing
         const seek = this.state.tick
         const starIcon = song.starred ? "star" : "star-o"
@@ -241,6 +415,9 @@ export default class MusicPlayer extends React.Component {
                 <div className="go_to_queue_container">
                     <IconButton id="queue_button" icon={<Icon icon="bars" />} onClick={this.goToQueueView} appearance="link" size="lg"/>
                 </div>
+                <div className="chromecast-icon">
+                    <google-cast-launcher id="castbutton"></google-cast-launcher>
+                </div>
                 {/* Volume controls */}
                 <div className="rs-hidden-xs">
                     <div className="volume_controls_container">
@@ -256,6 +433,7 @@ export default class MusicPlayer extends React.Component {
 MusicPlayer.propTypes = {
     playNextSong : PropTypes.func,
     playPreviousSong : PropTypes.func,
+    seekToSongInQueue: PropTypes.func,
     setStarOnSongs : PropTypes.func,
     toggleShuffle : PropTypes.func,
     song : PropTypes.object,

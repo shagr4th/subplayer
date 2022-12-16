@@ -81,6 +81,13 @@ module.exports = (themeName) => {
             font-weight: bold;
         }
 
+        .chromecast-icon {
+            padding: 3px;
+            width: 24px;
+            height: 24px;
+            --connected-color: ${isDark ? "@base-color" : "inherit"};
+        }
+
         @scrollbar-width: 8px;
         `
     )
