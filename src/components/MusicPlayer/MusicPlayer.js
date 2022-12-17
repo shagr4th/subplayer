@@ -36,6 +36,13 @@ export default class MusicPlayer extends React.Component {
         script.src = "https://www.gstatic.com/cv/js/sender/v1/cast_sender.js?loadCastFramework=1";
         script.async = true;
         document.body.appendChild(script);
+
+        if ('mediaSession' in navigator) {
+			navigator.mediaSession.setActionHandler('previoustrack', this.playPreviousSong);
+			navigator.mediaSession.setActionHandler('nexttrack', this.playNextSong);
+            navigator.mediaSession.setActionHandler('play', this.togglePlayerState);
+            navigator.mediaSession.setActionHandler('pause', this.togglePlayerState);
+		}
     }
 
     initializeCastPlayer = () => {
