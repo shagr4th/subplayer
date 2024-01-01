@@ -415,7 +415,7 @@ export default class MusicPlayer extends React.Component {
                     </div>
                 </div>
                 {/* Toggle shuffle */}
-                <div className="shuffle_container rs-hidden-xs">
+                <div className="shuffle_container">
                     <IconButton id="shuffle_button" icon={<Icon icon="random" inverse={!isShuffleOn} />} onClick={this.toggleShuffle} appearance="link" size="lg"/>
                 </div>
                 {/* Go to queue */}
